@@ -380,6 +380,17 @@ def main():
             st.rerun()
         return
 
+    if node_id == "End":
+        st.balloons()
+        st.success("🎉 全問クリア！おめでとうございます！")
+        if st.button("最初からやり直す", use_container_width=True):
+            st.session_state.current_node_id = "start"
+            st.session_state.history_path = ["start"]
+            st.session_state.view_state = "question"
+            st.session_state.ai_chat_history = []
+            st.rerun()
+        return
+
     node = st.session_state.nodes[node_id]
 
     if st.session_state.view_state == "question":
@@ -412,10 +423,10 @@ def main():
                 st.write(chat["content"])
         
         if chat_input := st.chat_input("この問題についてもっと詳しく聞く..."):
-            # APIキーは secrets から取得（サイドバー入力は廃止）
-            api_key = st.secrets.get("gemini_api_key", "")
+            # APIキーは secrets から取得
+            api_key_val = st.secrets.get("gemini_api_key", "")
             
-            if not api_key:
+            if not api_key_val:
                 st.warning("secrets.toml で gemini_api_key を設定してください")
             else:
                 # コンテキスト構築
