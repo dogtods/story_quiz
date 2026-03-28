@@ -262,9 +262,9 @@ with st.sidebar:
     if selected_deck_url:
         if st.button("🔄 データを再読み込み", use_container_width=True, key="reload_data_btn"):
             st.session_state.nodes = load_nodes_from_sheets(selected_deck_url)
-        st.success("最新データを読み込みました")
-        time.sleep(1)
-        st.rerun()
+            st.success("最新データを読み込みました")
+            time.sleep(1)
+            st.rerun()
 
     st.divider()
     st.caption("アプリ情報")
