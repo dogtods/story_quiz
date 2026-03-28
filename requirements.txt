@@ -1,0 +1,6 @@
+streamlit>=1.30.0
+gspread>=6.0.0
+google-auth>=2.25.0
+google-api-python-client>=2.100.0
+streamlit-js-eval>=0.1.7
+google-genai>=1.0.0
