@@ -128,8 +128,8 @@ def load_nodes_from_sheets(url: str):
             return DUMMY_NODES
             
         nodes = {}
-        # ヘッダーを飛ばしてループ [ID, コンテキスト, 設問, 正解, 誤答1, 誤答2, 正解解説, 誤答1解説, 誤答2解説, 正解時遷移先ID, 誤答時遷移先ID]
-        for r in rows[1:]:
+        # ヘッダーを飛ばしてループ [ID, コンテキスト, 設問, 正解, 誤答1, 誤答2, 正解解説, 誤答1解説, 誤答2解説, 正解時遷移先ID, 誤答時遷移先ID, 質問(L), 回答(M)]
+        for i, r in enumerate(rows[1:], start=2): # 行番号(1-indexed)を保持
             if len(r) < 11 or not r[0].strip():
                 continue
             
@@ -137,16 +137,19 @@ def load_nodes_from_sheets(url: str):
             node_id = r[0].strip().lower()
             nodes[node_id] = {
                 "id": node_id,
-                "context": r[1].strip(),
-                "question": r[2].strip(),
-                "correct": r[3].strip(),
-                "wrong1": r[4].strip(),
-                "wrong2": r[5].strip(),
-                "correct_explanation": r[6].strip(),
-                "wrong1_explanation": r[7].strip(),
-                "wrong2_explanation": r[8].strip(),
-                "next_id_correct": r[9].strip().lower(), # 遷移先も小文字化
-                "next_id_wrong": r[10].strip().lower()    # 遷移先も小文字化
+                "row_index": i, # 書き込み時に使用
+                "context": r[1].strip() if len(r) > 1 else "",
+                "question": r[2].strip() if len(r) > 2 else "",
+                "correct": r[3].strip() if len(r) > 3 else "",
+                "wrong1": r[4].strip() if len(r) > 4 else "",
+                "wrong2": r[5].strip() if len(r) > 5 else "",
+                "correct_explanation": r[6].strip() if len(r) > 6 else "",
+                "wrong1_explanation": r[7].strip() if len(r) > 7 else "",
+                "wrong2_explanation": r[8].strip() if len(r) > 8 else "",
+                "next_id_correct": r[9].strip().lower() if len(r) > 9 else "",
+                "next_id_wrong": r[10].strip().lower() if len(r) > 10 else "",
+                "past_question": r[11].strip() if len(r) > 11 else "",
+                "past_answer": r[12].strip() if len(r) > 12 else ""
             }
         
         if nodes:
@@ -157,6 +160,46 @@ def load_nodes_from_sheets(url: str):
     except Exception as e:
         st.error(f"シートの読み込みに失敗しました。ダミーデータを使用します: {e}")
         return DUMMY_NODES
+
+def save_ai_chat_to_sheets(url: str, row_index: int, question: str, answer: str):
+    """AIの質問と回答をスプレッドシートのL列とM列に追記（アペンド）保存する。"""
+    if not url or not GSPREAD_AVAILABLE:
+        return
+    try:
+        scope = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+        client = gspread.authorize(creds)
+        sh = client.open_by_url(url)
+        worksheet = sh.sheet1
+        
+        # 既存の値を取得
+        existing_val = worksheet.cell(row_index, 12).value or ""
+        existing_ans = worksheet.cell(row_index, 13).value or ""
+        
+        # 追記（既存があれば改行を入れる）
+        new_q = f"{existing_val}\n---\n{question}" if existing_val else question
+        new_a = f"{existing_ans}\n---\n{answer}" if existing_ans else answer
+        
+        worksheet.update_cell(row_index, 12, new_q)
+        worksheet.update_cell(row_index, 13, new_a)
+    except Exception as e:
+        st.error(f"履歴の保存に失敗しました: {e}")
+
+def get_shuffled_options(node):
+    """選択肢をシャッフルしたリストを返す。一貫性のためにセッションに保存する。"""
+    key = f"options_{node['id']}"
+    if key not in st.session_state:
+        opts = [
+            {"text": node["correct"], "is_correct": True},
+            {"text": node["wrong1"], "is_correct": False},
+            {"text": node["wrong2"], "is_correct": False}
+        ]
+        # 有効な選択肢（"なし"以外）のみを対象にシャッフル
+        opts = [o for o in opts if o["text"] != "なし"]
+        random.shuffle(opts)
+        st.session_state[key] = opts
+    return st.session_state[key]
 
 
 # ---------------------------------------------------------------------------
@@ -396,13 +439,26 @@ def main():
     if st.session_state.view_state == "question":
         st.subheader(f"📍 {node['context']}")
         st.info(node["question"])
-        options = [(node["correct"], True, 0), (node["wrong1"], False, 1), (node["wrong2"], False, 2)]
-        options = [opt for opt in options if opt[0] != "なし"]
-        for text, is_correct, idx in options:
-            if st.button(text, key=f"btn_{idx}", use_container_width=True):
-                handle_answer(is_correct, idx)
+        
+        # シャッフルされた選択肢を取得
+        shuffled_options = get_shuffled_options(node)
+        
+        for opt in shuffled_options:
+            if st.button(opt["text"], key=f"btn_{opt['text']}", use_container_width=True):
+                handle_answer(opt["is_correct"], opt["text"])
 
     elif st.session_state.view_state == "explanation":
+        # 過去のAI履歴があれば表示（複数対応）
+        if node.get("past_question") and node.get("past_answer"):
+            with st.expander("📝 過去のAIとのやり取りをすべて確認する"):
+                past_qs = node["past_question"].split("\n---\n")
+                past_as = node["past_answer"].split("\n---\n")
+                for i, (pq, pa) in enumerate(zip(past_qs, past_as), 1):
+                    st.markdown(f"**対話 {i}**")
+                    st.caption(f"質問: {pq}")
+                    st.write(f"回答: {pa}")
+                    st.divider()
+
         if st.session_state.quiz_answered_correct:
             st.success("✨ 正解！")
             st.write(node["correct_explanation"])
@@ -448,10 +504,19 @@ def main():
                 
                 with st.spinner("AI思考中..."):
                     try:
-                        response = _call_gemini(context_prompt, api_key_val)
-                        st.session_state.ai_chat_history.append({"role": "assistant", "content": response})
+                        response_text = _call_gemini(context_prompt, api_key_val)
+                        st.session_state.ai_chat_history.append({"role": "assistant", "content": response_text})
+                        
+                        # スプレッドシートに保存（最新の対話で上書き）
+                        save_ai_chat_to_sheets(
+                            st.secrets.get("spreadsheet_url", ""), 
+                            node["row_index"], 
+                            chat_input, 
+                            response_text
+                        )
+                        
                         with st.chat_message("assistant"):
-                            st.write(response)
+                            st.write(response_text)
                     except Exception as e:
                         st.error(str(e))
 
