@@ -221,6 +221,11 @@ if "url_dict" not in st.session_state:
         for name, info in st.secrets["decks"].items():
             if "url" in info:
                 initial_decks[name] = info["url"]
+    
+    # もし一つも設定がない場合は空にならないようにダミーまたは警告用の誘導を入れる
+    if not initial_decks:
+        initial_decks["(未設定)"] = ""
+        
     st.session_state.url_dict = initial_decks
 
 with st.sidebar:
@@ -235,6 +240,9 @@ with st.sidebar:
         if st.button("登録する"):
             if new_name and new_url:
                 st.session_state.url_dict[new_name] = new_url
+                # 「(未設定)」があれば削除
+                if "(未設定)" in st.session_state.url_dict:
+                    del st.session_state.url_dict["(未設定)"]
                 st.success(f"「{new_name}」を登録しました")
                 st.rerun()
             else:
@@ -242,12 +250,18 @@ with st.sidebar:
 
     # プルダウン選択
     options_keys = list(st.session_state.url_dict.keys())
+    
+    if not options_keys:
+        st.error("問題集が登録されていません。上のフォームから登録してください。")
+        st.stop()
+        
     selected_deck_name = st.selectbox("問題集を選択", options_keys, key="deck_selector_sidebar")
-    selected_deck_url = st.session_state.url_dict[selected_deck_name]
+    selected_deck_url = st.session_state.url_dict.get(selected_deck_name, "")
     
     # 再読み込みボタン
-    if st.button("🔄 データを再読み込み", use_container_width=True, key="reload_data_btn"):
-        st.session_state.nodes = load_nodes_from_sheets(selected_deck_url)
+    if selected_deck_url:
+        if st.button("🔄 データを再読み込み", use_container_width=True, key="reload_data_btn"):
+            st.session_state.nodes = load_nodes_from_sheets(selected_deck_url)
         st.success("最新データを読み込みました")
         time.sleep(1)
         st.rerun()
