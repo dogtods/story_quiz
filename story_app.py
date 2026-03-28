@@ -448,7 +448,7 @@ def main():
                 
                 with st.spinner("AI思考中..."):
                     try:
-                        response = _call_gemini(context_prompt, gemini_key)
+                        response = _call_gemini(context_prompt, api_key_val)
                         st.session_state.ai_chat_history.append({"role": "assistant", "content": response})
                         with st.chat_message("assistant"):
                             st.write(response)
