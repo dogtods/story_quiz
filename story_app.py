@@ -179,8 +179,8 @@ def _call_gemini(prompt: str, api_key: str) -> str:
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "maxOutputTokens": 300,   # 回答の最大長を制限
-            "temperature": 0.3,       # 創造性を下げ事実重視に
+            "maxOutputTokens": st.session_state.get("ai_max_tokens", 300),
+            "temperature": st.session_state.get("ai_temperature", 0.3),
         },
     }
     for i in range(3):
@@ -251,21 +251,9 @@ with st.sidebar:
     st.title("⚙️ 設定")
     st.caption("問題集の管理")
 
-    with st.expander("➕ 新しい問題集を登録"):
-        new_name = st.text_input("名前（例: 新プロジェクト）", key="new_deck_name")
-        new_url  = st.text_input("スプレッドシートのURL", key="new_deck_url")
-        if st.button("登録する"):
-            if new_name and new_url:
-                st.session_state.url_dict[new_name] = new_url
-                st.session_state.url_dict.pop("(未設定)", None)
-                st.success(f"「{new_name}」を登録しました")
-                st.rerun()
-            else:
-                st.warning("名前とURLの両方を入力してください")
-
     options_keys = list(st.session_state.url_dict.keys())
-    if not options_keys:
-        st.error("問題集が登録されていません。")
+    if not options_keys or options_keys == ["(未設定)"]:
+        st.error("問題集が登録されていません。secrets.tomlに問題集を設定してください。")
         st.stop()
 
     selected_deck_name = st.selectbox("問題集を選択", options_keys, key="deck_selector_sidebar")
@@ -281,6 +269,11 @@ with st.sidebar:
     st.divider()
     st.caption("アプリ情報")
     st.info("ストーリー分岐型クイズアプリ v1.3")
+
+    st.divider()
+    with st.expander("🛠️ AI高度な設定"):
+        st.slider("Temperature", 0.0, 1.0, 0.3, 0.1, key="ai_temperature", help="高いほど創造的、低いほど正確")
+        st.number_input("Max Output Tokens", 100, 2048, 300, 50, key="ai_max_tokens", help="AI回答の最大文字数")
 
 # --- URL 変更検知 ---
 if "current_url" not in st.session_state or st.session_state.current_url != selected_deck_url:
@@ -333,9 +326,8 @@ def next_question():
 
 
 def render_header():
-    st.title("📖 ストーリー分岐クイズ")
     path_str = " ➔ ".join([f"`{p}`" for p in st.session_state.history_path])
-    st.markdown(f"**現在のパス:** {path_str}")
+    st.caption(f"現在のパス: {path_str}")
     st.divider()
 
 
@@ -362,7 +354,7 @@ def main():
 
     # ========== 出題画面 ==========
     if st.session_state.view_state == "question":
-        st.subheader(f"📍 {node['context']}")
+        st.write(f"**📍 {node['context']}**")
         st.info(node["question"])
         for opt in get_shuffled_options(node):
             if st.button(opt["text"], key=f"btn_{opt['text']}", use_container_width=True):
@@ -371,7 +363,7 @@ def main():
     # ========== 解説画面 ==========
     elif st.session_state.view_state == "explanation":
         # 設問と正解を再表示
-        st.subheader(f"📍 {node['context']}")
+        st.write(f"**📍 {node['context']}**")
         st.info(f"**設問:** {node['question']}\n\n**正解:** {node['correct']}")
         st.divider()
 
