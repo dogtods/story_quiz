@@ -1,12 +1,11 @@
+"""ストーリー分岐クイズアプリ v1.3"""
+
 import streamlit as st
 import random
-import json
 import time
 from datetime import datetime, timezone, timedelta
 
-# ---------------------------------------------------------------------------
-# Google Sheets imports
-# ---------------------------------------------------------------------------
+# --- Google Sheets imports ---
 try:
     import gspread
     from google.oauth2.service_account import Credentials
@@ -14,294 +13,264 @@ try:
 except ImportError:
     GSPREAD_AVAILABLE = False
 
-# ---------------------------------------------------------------------------
-# ページ設定
-# ---------------------------------------------------------------------------
-st.set_page_config(
-    page_title="ストーリー分岐クイズ",
-    page_icon="📖",
-    layout="centered",
-)
+# --- HTTP client for Gemini API ---
+import requests as _requests
 
-# ---------------------------------------------------------------------------
-# ダミーデータ (問題ID, コンテキスト, 設問, 正解, 誤答1, 誤答2, 正解解説, 誤答解説, 正解時遷移先ID, 誤答時遷移先ID)
-# ---------------------------------------------------------------------------
+# --- ページ設定 ---
+st.set_page_config(page_title="ストーリー分岐クイズ", page_icon="📖", layout="centered")
+
+# =============================================================================
+# ダミーデータ
+# =============================================================================
 DUMMY_NODES = {
     "start": {
-        "id": "start",
+        "id": "start", "row_index": 0,
         "context": "あなたは新米エンジニアです。最初のタスクが割り当てられました。",
         "question": "コードにバグを見つけました。どうしますか？",
         "correct": "原因を調査し、修正案を作成して先輩に相談する",
         "wrong1": "黙って修正してコミットする",
         "wrong2": "見なかったことにして放置する",
         "correct_explanation": "素晴らしい！報告・連絡・相談は基本ですね。",
-        "wrong_explanation": "独断での修正や放置は、後で大きなトラブルになる可能性があります。",
-        "next_id_correct": "success_1",
-        "next_id_wrong": "fail_1"
-    },
-    "success_1": {
-        "id": "success_1",
-        "context": "先輩から「いい筋だね」と褒められました！",
-        "question": "修正が完了しました。次にすべきことは？",
-        "correct": "テストコードを書いて動作を確認する",
-        "wrong1": "すぐにマージして本番環境に反映する",
-        "wrong2": "コーヒーを飲みに行く",
-        "correct_explanation": "品質確保のためにテストは不可欠です。",
-        "wrong_explanation": "テストなしでのリリースは非常に危険です。",
-        "next_id_correct": "goal",
-        "next_id_wrong": "fail_2"
-    },
-    "fail_1": {
-        "id": "fail_1",
-        "context": "後日、あなたの修正が原因でシステムがダウンしてしまいました...",
-        "question": "どう対応しますか？",
-        "correct": "すぐにチームに報告し、状況を説明する",
-        "wrong1": "自分のせいではないと主張する",
-        "wrong2": "こっそり元に戻そうとする",
-        "correct_explanation": "ミスを認めて迅速に共有することが、被害を最小限に抑える鍵です。",
-        "wrong_explanation": "隠蔽や責任転嫁は信頼を失い、復旧を遅らせます。",
-        "next_id_correct": "start",
-        "next_id_wrong": "game_over"
-    },
-    "fail_2": {
-        "id": "fail_2",
-        "context": "本番環境でエラーが発生しました。テスト不足だったようです。",
-        "question": "再発防止策として適切なのは？",
-        "correct": "CI/CDを導入し、自動テストを必須にする",
-        "wrong1": "「次から気をつける」と心に誓う",
-        "wrong2": "担当者を交代する",
-        "correct_explanation": "仕組みで解決するのがエンジニアの役割です。",
-        "wrong_explanation": "精神論や個人の責任に帰結させても、再発は防げません。",
-        "next_id_correct": "goal",
-        "next_id_wrong": "game_over"
+        "wrong1_explanation": "独断での修正は、後で大きなトラブルになる可能性があります。",
+        "wrong2_explanation": "放置は、後で大きなトラブルになる可能性があります。",
+        "next_id_correct": "goal", "next_id_wrong": "start",
+        "past_question": "", "past_answer": ""
     },
     "goal": {
-        "id": "goal",
+        "id": "goal", "row_index": 0,
         "context": "おめでとうございます！プロジェクトは大成功です。",
-        "question": "最後のメッセージ",
-        "correct": "最初から遊ぶ",
-        "wrong1": "なし",
-        "wrong2": "なし",
+        "question": "最後のメッセージ", "correct": "最初から遊ぶ",
+        "wrong1": "なし", "wrong2": "なし",
         "correct_explanation": "これまでの経験はあなたの糧になります。",
-        "wrong_explanation": "-",
-        "next_id_correct": "start",
-        "next_id_wrong": "start"
+        "wrong1_explanation": "-", "wrong2_explanation": "-",
+        "next_id_correct": "start", "next_id_wrong": "start",
+        "past_question": "", "past_answer": ""
     },
-    "game_over": {
-        "id": "game_over",
-        "context": "残念ながら、あなたのキャリアはここで終わってしまいました...",
-        "question": "再挑戦しますか？",
-        "correct": "はい",
-        "wrong1": "いいえ",
-        "wrong2": "なし",
-        "correct_explanation": "失敗から学び、次はもっとうまくやりましょう。",
-        "wrong_explanation": "-",
-        "next_id_correct": "start",
-        "next_id_wrong": "start"
-    }
 }
 
-# ---------------------------------------------------------------------------
-# Google Sheets 読み込み
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# Google Sheets 読み込み
-# ---------------------------------------------------------------------------
+# =============================================================================
+# Google Sheets 共通認証
+# =============================================================================
+def _get_gspread_client(readonly: bool = True):
+    """gspread クライアントを返す。認証ロジックを一箇所に集約。"""
+    if not GSPREAD_AVAILABLE:
+        return None
+    if readonly:
+        scope = [
+            "https://www.googleapis.com/auth/spreadsheets.readonly",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ]
+    else:
+        scope = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]), scopes=scope
+    )
+    return gspread.authorize(creds)
+
+
+# =============================================================================
+# データ読み込み・保存
+# =============================================================================
 def load_nodes_from_sheets(url: str):
-    """Google Sheetsから問題データを読み込み、ノード辞書に変換する。"""
+    """Google Sheets から問題データを読み込む。"""
     if not url or not GSPREAD_AVAILABLE:
         return DUMMY_NODES
-    
     try:
-        scope = [
-            'https://www.googleapis.com/auth/spreadsheets.readonly',
-            'https://www.googleapis.com/auth/drive.readonly'
-        ]
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-        client = gspread.authorize(creds)
-        sh = client.open_by_url(url)
-        worksheet = sh.sheet1  # 1枚目のシートを想定
-        rows = worksheet.get_all_values()
-        
+        client = _get_gspread_client(readonly=True)
+        rows = client.open_by_url(url).sheet1.get_all_values()
         if not rows or len(rows) < 2:
             return DUMMY_NODES
-            
+
         nodes = {}
-        # ヘッダーを飛ばしてループ [ID, コンテキスト, 設問, 正解, 誤答1, 誤答2, 正解解説, 誤答1解説, 誤答2解説, 正解時遷移先ID, 誤答時遷移先ID, 質問(L), 回答(M)]
-        for i, r in enumerate(rows[1:], start=2): # 行番号(1-indexed)を保持
+        for i, r in enumerate(rows[1:], start=2):
             if len(r) < 11 or not r[0].strip():
                 continue
-            
-            # IDを小文字化・トリミングして統一
-            node_id = r[0].strip().lower()
-            nodes[node_id] = {
-                "id": node_id,
-                "row_index": i, # 書き込み時に使用
-                "context": r[1].strip() if len(r) > 1 else "",
-                "question": r[2].strip() if len(r) > 2 else "",
-                "correct": r[3].strip() if len(r) > 3 else "",
-                "wrong1": r[4].strip() if len(r) > 4 else "",
-                "wrong2": r[5].strip() if len(r) > 5 else "",
-                "correct_explanation": r[6].strip() if len(r) > 6 else "",
-                "wrong1_explanation": r[7].strip() if len(r) > 7 else "",
-                "wrong2_explanation": r[8].strip() if len(r) > 8 else "",
-                "next_id_correct": r[9].strip().lower() if len(r) > 9 else "",
-                "next_id_wrong": r[10].strip().lower() if len(r) > 10 else "",
-                "past_question": r[11].strip() if len(r) > 11 else "",
-                "past_answer": r[12].strip() if len(r) > 12 else ""
+            nid = r[0].strip().lower()
+            nodes[nid] = {
+                "id": nid,
+                "row_index": i,
+                "context":             r[1].strip()         if len(r) > 1  else "",
+                "question":            r[2].strip()         if len(r) > 2  else "",
+                "correct":             r[3].strip()         if len(r) > 3  else "",
+                "wrong1":              r[4].strip()         if len(r) > 4  else "",
+                "wrong2":              r[5].strip()         if len(r) > 5  else "",
+                "correct_explanation": r[6].strip()         if len(r) > 6  else "",
+                "wrong1_explanation":  r[7].strip()         if len(r) > 7  else "",
+                "wrong2_explanation":  r[8].strip()         if len(r) > 8  else "",
+                "next_id_correct":     r[9].strip().lower() if len(r) > 9  else "",
+                "next_id_wrong":       r[10].strip().lower()if len(r) > 10 else "",
+                "past_question":       r[11].strip()        if len(r) > 11 else "",
+                "past_answer":         r[12].strip()        if len(r) > 12 else "",
             }
-        
         if nodes:
             st.success(f"シートから {len(nodes)} 件のデータを読み込みました。")
             return nodes
-        else:
-            return DUMMY_NODES
+        return DUMMY_NODES
     except Exception as e:
-        st.error(f"シートの読み込みに失敗しました。ダミーデータを使用します: {e}")
+        st.error(f"シート読み込み失敗（ダミーデータを使用）: {e}")
         return DUMMY_NODES
 
+
 def save_ai_chat_to_sheets(url: str, row_index: int, question: str, answer: str):
-    """AIの質問と回答をスプレッドシートのL列とM列に追記（アペンド）保存する。"""
+    """AI 質問・回答を L列/M列 に追記保存する。"""
+    if not url or not GSPREAD_AVAILABLE or row_index == 0:
+        return
+    try:
+        ws = _get_gspread_client(readonly=False).open_by_url(url).sheet1
+        old_q = ws.cell(row_index, 12).value or ""
+        old_a = ws.cell(row_index, 13).value or ""
+        sep = "\n---\n"
+        ws.update_cell(row_index, 12, f"{old_q}{sep}{question}" if old_q else question)
+        ws.update_cell(row_index, 13, f"{old_a}{sep}{answer}" if old_a else answer)
+    except Exception as e:
+        st.error(f"履歴保存失敗: {e}")
+
+
+def add_history_record(word: str, correct: bool):
+    """学習履歴をバッファに追加し、5件溜まったらフラッシュ。"""
+    jst = timezone(timedelta(hours=9))
+    st.session_state.pending_history.append({
+        "word": word,
+        "correct": correct,
+        "timestamp": datetime.now(jst).isoformat(),
+    })
+    if len(st.session_state.pending_history) >= 5:
+        flush_history_to_sheets()
+
+
+def flush_history_to_sheets():
+    """バッファ内の学習履歴を History シートに書き出す。"""
+    pending = st.session_state.pending_history
+    if not pending:
+        return
+    url = st.session_state.get("current_url")
     if not url or not GSPREAD_AVAILABLE:
         return
     try:
-        scope = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-        client = gspread.authorize(creds)
+        client = _get_gspread_client(readonly=False)
         sh = client.open_by_url(url)
-        worksheet = sh.sheet1
-        
-        # 既存の値を取得
-        existing_val = worksheet.cell(row_index, 12).value or ""
-        existing_ans = worksheet.cell(row_index, 13).value or ""
-        
-        # 追記（既存があれば改行を入れる）
-        new_q = f"{existing_val}\n---\n{question}" if existing_val else question
-        new_a = f"{existing_ans}\n---\n{answer}" if existing_ans else answer
-        
-        worksheet.update_cell(row_index, 12, new_q)
-        worksheet.update_cell(row_index, 13, new_a)
+        try:
+            ws = sh.worksheet("History")
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title="History", rows=1000, cols=3)
+            ws.append_row(["Timestamp", "Word", "Correct"])
+        ws.append_rows([
+            [r["timestamp"], r["word"], "Correct" if r["correct"] else "Wrong"]
+            for r in pending
+        ])
+        st.session_state.pending_history = []
+        st.toast("学習履歴を保存しました！", icon="✅")
     except Exception as e:
-        st.error(f"履歴の保存に失敗しました: {e}")
-
-def get_shuffled_options(node):
-    """選択肢をシャッフルしたリストを返す。一貫性のためにセッションに保存する。"""
-    key = f"options_{node['id']}"
-    if key not in st.session_state:
-        opts = [
-            {"text": node["correct"], "is_correct": True},
-            {"text": node["wrong1"], "is_correct": False},
-            {"text": node["wrong2"], "is_correct": False}
-        ]
-        # 有効な選択肢（"なし"以外）のみを対象にシャッフル
-        opts = [o for o in opts if o["text"] != "なし"]
-        random.shuffle(opts)
-        st.session_state[key] = opts
-    return st.session_state[key]
+        st.error(f"保存失敗: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Gemini AI 連携
-# ---------------------------------------------------------------------------
-import requests as _requests
-
+# =============================================================================
+# Gemini AI（トークン節約仕様）
+# =============================================================================
 def _call_gemini(prompt: str, api_key: str) -> str:
-    """Gemini REST APIを共通呼び出し関数（検索連携あり・リトライ処理付き）。"""
+    """Gemini REST API 呼び出し（リトライ付き）。"""
     url = (
         "https://generativelanguage.googleapis.com/v1beta/"
         f"models/gemini-flash-lite-latest:generateContent?key={api_key}"
     )
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "tools": [{"googleSearch": {}}]
+        "generationConfig": {
+            "maxOutputTokens": 300,   # 回答の最大長を制限
+            "temperature": 0.3,       # 創造性を下げ事実重視に
+        },
     }
-    
-    max_retries = 3
-    for i in range(max_retries):
+    for i in range(3):
         try:
             resp = _requests.post(url, json=payload, timeout=30)
             resp.raise_for_status()
-            data = resp.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
         except _requests.exceptions.HTTPError as e:
-            status_code = e.response.status_code
-            if status_code in [429, 500, 503, 504] and i < max_retries - 1:
-                # 指数バックオフ (2, 4, 8秒)
-                wait_time = (2 ** (i + 1))
-                time.sleep(wait_time)
+            code = e.response.status_code
+            if code in (429, 500, 503, 504) and i < 2:
+                time.sleep(2 ** (i + 1))
                 continue
-            
-            # エラーメッセージの日本語化
-            if status_code == 429:
-                raise Exception("AIの利用制限に達しました。少し時間を置いてから再度お試しください。")
-            elif status_code == 503:
-                raise Exception("AIサーバーが一時的に混み合っています。数分後に再度お試しください。")
-            elif status_code in [500, 504]:
-                raise Exception("AIサーバーでエラーが発生しました。時間を置いて再度お試しください。")
-            else:
-                raise Exception(f"通信エラーが発生しました (Status: {status_code})")
-        except _requests.exceptions.RequestException as e:
-            if i < max_retries - 1:
+            msgs = {429: "AI利用制限に達しました。", 503: "AIサーバー混雑中。",
+                    500: "AIサーバーエラー。", 504: "AIサーバーエラー。"}
+            raise Exception(msgs.get(code, f"通信エラー (Status: {code})"))
+        except _requests.exceptions.RequestException:
+            if i < 2:
                 time.sleep(2)
                 continue
-            raise Exception(f"ネットワーク接続エラーが発生しました: {e}")
-    
-    raise Exception("AIからの応答が得られませんでした。")
+            raise Exception("ネットワーク接続エラー。")
+    raise Exception("AIから応答を得られませんでした。")
 
-# ---------------------------------------------------------------------------
-# サイドバー設定
-# ---------------------------------------------------------------------------
+
+# =============================================================================
+# ユーティリティ
+# =============================================================================
+def get_shuffled_options(node):
+    """選択肢をシャッフルして返す（セッション内は固定）。"""
+    key = f"options_{node['id']}"
+    if key not in st.session_state:
+        opts = [
+            {"text": node["correct"], "is_correct": True},
+            {"text": node["wrong1"],   "is_correct": False},
+            {"text": node["wrong2"],   "is_correct": False},
+        ]
+        opts = [o for o in opts if o["text"] != "なし"]
+        random.shuffle(opts)
+        st.session_state[key] = opts
+    return st.session_state[key]
+
+
+def reset_to_start():
+    """クイズ状態を初期化して start に戻す。"""
+    st.session_state.current_node_id = "start"
+    st.session_state.history_path = ["start"]
+    st.session_state.view_state = "question"
+    st.session_state.ai_chat_history = []
+    st.rerun()
+
+
+# =============================================================================
+# サイドバー
+# =============================================================================
 if "url_dict" not in st.session_state:
-    # 初期リストの構築
-    initial_decks = {}
+    initial = {}
     default_url = st.secrets.get("spreadsheet_url", "")
     if default_url:
-        initial_decks["メイン"] = default_url
-    
+        initial["メイン"] = default_url
     if "decks" in st.secrets:
         for name, info in st.secrets["decks"].items():
             if "url" in info:
-                initial_decks[name] = info["url"]
-    
-    # もし一つも設定がない場合は空にならないようにダミーまたは警告用の誘導を入れる
-    if not initial_decks:
-        initial_decks["(未設定)"] = ""
-        
-    st.session_state.url_dict = initial_decks
+                initial[name] = info["url"]
+    if not initial:
+        initial["(未設定)"] = ""
+    st.session_state.url_dict = initial
 
 with st.sidebar:
     st.title("⚙️ 設定")
-    
-    # 1. 問題集（デッキ）管理
     st.caption("問題集の管理")
-    # URL登録フォーム（expanderに隠す）
+
     with st.expander("➕ 新しい問題集を登録"):
         new_name = st.text_input("名前（例: 新プロジェクト）", key="new_deck_name")
-        new_url = st.text_input("スプレッドシートのURL", key="new_deck_url")
+        new_url  = st.text_input("スプレッドシートのURL", key="new_deck_url")
         if st.button("登録する"):
             if new_name and new_url:
                 st.session_state.url_dict[new_name] = new_url
-                # 「(未設定)」があれば削除
-                if "(未設定)" in st.session_state.url_dict:
-                    del st.session_state.url_dict["(未設定)"]
+                st.session_state.url_dict.pop("(未設定)", None)
                 st.success(f"「{new_name}」を登録しました")
                 st.rerun()
             else:
                 st.warning("名前とURLの両方を入力してください")
 
-    # プルダウン選択
     options_keys = list(st.session_state.url_dict.keys())
-    
     if not options_keys:
-        st.error("問題集が登録されていません。上のフォームから登録してください。")
+        st.error("問題集が登録されていません。")
         st.stop()
-        
+
     selected_deck_name = st.selectbox("問題集を選択", options_keys, key="deck_selector_sidebar")
-    selected_deck_url = st.session_state.url_dict.get(selected_deck_name, "")
-    
-    # 再読み込みボタン
+    selected_deck_url  = st.session_state.url_dict.get(selected_deck_name, "")
+
     if selected_deck_url:
         if st.button("🔄 データを再読み込み", use_container_width=True, key="reload_data_btn"):
             st.session_state.nodes = load_nodes_from_sheets(selected_deck_url)
@@ -311,218 +280,167 @@ with st.sidebar:
 
     st.divider()
     st.caption("アプリ情報")
-    st.info("ストーリー分岐型クイズアプリ v1.2")
+    st.info("ストーリー分岐型クイズアプリ v1.3")
 
-# URLが変更された場合の処理
+# --- URL 変更検知 ---
 if "current_url" not in st.session_state or st.session_state.current_url != selected_deck_url:
     st.session_state.current_url = selected_deck_url
     st.session_state.nodes = load_nodes_from_sheets(selected_deck_url)
-    # 状態リセット
     st.session_state.current_node_id = "start"
     st.session_state.history_path = ["start"]
     st.session_state.view_state = "question"
     st.session_state.quiz_answered_correct = False
     st.session_state.ai_chat_history = []
 
-# ---------------------------------------------------------------------------
-# セッション状態の初期化
-# ---------------------------------------------------------------------------
-if "nodes" not in st.session_state:
-    st.session_state.nodes = load_nodes_from_sheets(selected_deck_url)
-if "current_node_id" not in st.session_state:
-    st.session_state.current_node_id = "start"
-if "history_path" not in st.session_state:
-    st.session_state.history_path = ["start"]
-if "view_state" not in st.session_state:
-    st.session_state.view_state = "question"
-if "quiz_answered_correct" not in st.session_state:
-    st.session_state.quiz_answered_correct = False
-if "pending_history" not in st.session_state:
-    st.session_state.pending_history = []
-if "ai_chat_history" not in st.session_state:
-    st.session_state.ai_chat_history = []
+# --- セッション初期化 ---
+_defaults = {
+    "nodes": lambda: load_nodes_from_sheets(selected_deck_url),
+    "current_node_id": "start",
+    "history_path": ["start"],
+    "view_state": "question",
+    "quiz_answered_correct": False,
+    "pending_history": [],
+    "ai_chat_history": [],
+}
+for k, v in _defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v() if callable(v) else v
 
-# ---------------------------------------------------------------------------
-# Google Sheets 連携
-# ---------------------------------------------------------------------------
-def add_history_record(word: str, correct: bool):
-    jst = timezone(timedelta(hours=9))
-    timestamp = datetime.now(jst).isoformat()
-    record = {
-        "word": word,
-        "correct": correct,
-        "timestamp": timestamp,
-    }
-    st.session_state.pending_history.append(record)
-    if len(st.session_state.pending_history) >= 5:
-        flush_history_to_sheets()
 
-def flush_history_to_sheets():
-    try:
-        pending = st.session_state.pending_history
-        if not pending: return
-        url = st.session_state.get("current_url")
-        if not url or not GSPREAD_AVAILABLE: return
-        scope = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-        client = gspread.authorize(creds)
-        sh = client.open_by_url(url)
-        try:
-            worksheet = sh.worksheet("History")
-        except gspread.WorksheetNotFound:
-            worksheet = sh.add_worksheet(title="History", rows=1000, cols=3)
-            worksheet.append_row(["Timestamp", "Word", "Correct"])
-        rows_to_add = [[r["timestamp"], r["word"], "Correct" if r["correct"] else "Wrong"] for r in pending]
-        worksheet.append_rows(rows_to_add)
-        st.session_state.pending_history = []
-        st.toast("学習履歴を保存しました！", icon="✅")
-    except Exception as e:
-        st.error(f"保存失敗: {e}")
-
-# ---------------------------------------------------------------------------
-# UI コンポーネント
-# ---------------------------------------------------------------------------
-def render_header():
-    st.title("📖 ストーリー分岐クイズ")
-    path_str = " ➔ ".join([f"`{id}`" for id in st.session_state.history_path])
-    st.markdown(f"**現在のパス:** {path_str}")
-    st.divider()
-
-def handle_answer(is_correct, option_idx=0):
+# =============================================================================
+# メインロジック
+# =============================================================================
+def handle_answer(is_correct: bool, selected_text: str):
+    """回答を処理する。"""
     st.session_state.quiz_answered_correct = is_correct
-    st.session_state.last_option_idx = option_idx
+    st.session_state.selected_option_text = selected_text
     st.session_state.view_state = "explanation"
-    st.session_state.ai_chat_history = [] # チャットリセット
-    current_node = st.session_state.nodes[st.session_state.current_node_id]
-    add_history_record(f"Node:{current_node['id']}", is_correct)
+    st.session_state.ai_chat_history = []
+    node = st.session_state.nodes[st.session_state.current_node_id]
+    add_history_record(f"Node:{node['id']}", is_correct)
     st.rerun()
 
+
 def next_question():
-    current_node = st.session_state.nodes[st.session_state.current_node_id]
-    next_id = current_node["next_id_correct"] if st.session_state.quiz_answered_correct else current_node["next_id_wrong"]
-    st.session_state.current_node_id = next_id
-    st.session_state.history_path.append(next_id)
+    """次の問題へ遷移する。"""
+    node = st.session_state.nodes[st.session_state.current_node_id]
+    nxt = node["next_id_correct"] if st.session_state.quiz_answered_correct else node["next_id_wrong"]
+    st.session_state.current_node_id = nxt
+    st.session_state.history_path.append(nxt)
     st.session_state.view_state = "question"
     flush_history_to_sheets()
     st.rerun()
 
-# ---------------------------------------------------------------------------
-# メイン表示ロジック
-# ---------------------------------------------------------------------------
+
+def render_header():
+    st.title("📖 ストーリー分岐クイズ")
+    path_str = " ➔ ".join([f"`{p}`" for p in st.session_state.history_path])
+    st.markdown(f"**現在のパス:** {path_str}")
+    st.divider()
+
+
 def main():
     render_header()
     node_id = st.session_state.current_node_id
+
+    # --- ノード未検出 ---
     if node_id not in st.session_state.nodes:
         st.error(f"Node ID '{node_id}' が見つかりません。")
-        st.warning(f"読み込まれたID一覧: {list(st.session_state.nodes.keys())}")
         if st.button("最初に戻る"):
-            st.session_state.current_node_id = "start"
-            st.session_state.history_path = ["start"]
-            st.session_state.view_state = "question"
-            st.rerun()
+            reset_to_start()
         return
 
+    # --- End 到達 ---
     if node_id == "End":
         st.balloons()
         st.success("🎉 全問クリア！おめでとうございます！")
         if st.button("最初からやり直す", use_container_width=True):
-            st.session_state.current_node_id = "start"
-            st.session_state.history_path = ["start"]
-            st.session_state.view_state = "question"
-            st.session_state.ai_chat_history = []
-            st.rerun()
+            reset_to_start()
         return
 
     node = st.session_state.nodes[node_id]
 
+    # ========== 出題画面 ==========
     if st.session_state.view_state == "question":
         st.subheader(f"📍 {node['context']}")
         st.info(node["question"])
-        
-        # シャッフルされた選択肢を取得
-        shuffled_options = get_shuffled_options(node)
-        
-        for opt in shuffled_options:
+        for opt in get_shuffled_options(node):
             if st.button(opt["text"], key=f"btn_{opt['text']}", use_container_width=True):
                 handle_answer(opt["is_correct"], opt["text"])
 
+    # ========== 解説画面 ==========
     elif st.session_state.view_state == "explanation":
-        # 過去のAI履歴があれば表示（複数対応）
+        # 設問と正解を再表示
+        st.subheader(f"📍 {node['context']}")
+        st.info(f"**設問:** {node['question']}\n\n**正解:** {node['correct']}")
+        st.divider()
+
+        # 過去の AI 履歴（複数対応）
         if node.get("past_question") and node.get("past_answer"):
             with st.expander("📝 過去のAIとのやり取りをすべて確認する"):
-                past_qs = node["past_question"].split("\n---\n")
-                past_as = node["past_answer"].split("\n---\n")
-                for i, (pq, pa) in enumerate(zip(past_qs, past_as), 1):
-                    st.markdown(f"**対話 {i}**")
+                qs = node["past_question"].split("\n---\n")
+                ans = node["past_answer"].split("\n---\n")
+                for idx, (pq, pa) in enumerate(zip(qs, ans), 1):
+                    st.markdown(f"**対話 {idx}**")
                     st.caption(f"質問: {pq}")
-                    st.write(f"回答: {pa}")
+                    st.write(pa)
                     st.divider()
 
+        # 正誤判定
         if st.session_state.quiz_answered_correct:
             st.success("✨ 正解！")
             st.write(node["correct_explanation"])
         else:
             st.error("❌ 不正解...")
-            if st.session_state.get("last_option_idx") == 1:
+            sel = st.session_state.get("selected_option_text", "")
+            if sel == node.get("wrong1"):
                 st.write(node.get("wrong1_explanation", "解説がありません"))
             else:
                 st.write(node.get("wrong2_explanation", "解説がありません"))
-        
-        # AIチャット機能
+
+        # AI チャット
         st.divider()
         st.subheader("🤖 AIに質問する")
-        
-        # 履歴表示
+
         for chat in st.session_state.ai_chat_history:
             with st.chat_message(chat["role"]):
                 st.write(chat["content"])
-        
-        if chat_input := st.chat_input("この問題についてもっと詳しく聞く..."):
-            # APIキーは secrets から取得
-            api_key_val = st.secrets.get("gemini_api_key", "")
-            
-            if not api_key_val:
+
+        if user_q := st.chat_input("この問題についてもっと詳しく聞く..."):
+            api_key = st.secrets.get("gemini_api_key", "")
+            if not api_key:
                 st.warning("secrets.toml で gemini_api_key を設定してください")
             else:
-                # コンテキスト構築
-                chosen_text = node["correct"] if st.session_state.quiz_answered_correct else (node["wrong1"] if st.session_state.get("last_option_idx") == 1 else node["wrong2"])
-                context_prompt = (
-                    f"あなたは教育アシスタントです。以下の問題についてユーザーと対話しています。\n"
-                    f"【状況】{node['context']}\n"
-                    f"【設問】{node['question']}\n"
-                    f"【正解】{node['correct']}\n"
-                    f"【ユーザーの選択】{chosen_text}\n"
-                    f"【正解の解説】{node['correct_explanation']}\n\n"
-                    f"ユーザーからの質問: {chat_input}\n"
-                    f"上記コンテキストを踏まえ、わかりやすく回答してください。"
+                # トークン節約型プロンプト（必要最小限のコンテキスト）
+                prompt = (
+                    f"設問:{node['question']}\n正解:{node['correct']}\n"
+                    f"解説:{node['correct_explanation']}\n"
+                    f"質問:{user_q}\n"
+                    "挨拶・前置き不要。簡潔に回答。"
                 )
-                
-                st.session_state.ai_chat_history.append({"role": "user", "content": chat_input})
+
+                st.session_state.ai_chat_history.append({"role": "user", "content": user_q})
                 with st.chat_message("user"):
-                    st.write(chat_input)
-                
+                    st.write(user_q)
+
                 with st.spinner("AI思考中..."):
                     try:
-                        response_text = _call_gemini(context_prompt, api_key_val)
-                        st.session_state.ai_chat_history.append({"role": "assistant", "content": response_text})
-                        
-                        # スプレッドシートに保存（最新の対話で上書き）
+                        reply = _call_gemini(prompt, api_key)
+                        st.session_state.ai_chat_history.append({"role": "assistant", "content": reply})
                         save_ai_chat_to_sheets(
-                            st.secrets.get("spreadsheet_url", ""), 
-                            node["row_index"], 
-                            chat_input, 
-                            response_text
+                            st.session_state.get("current_url", ""),
+                            node.get("row_index", 0),
+                            user_q, reply,
                         )
-                        
                         with st.chat_message("assistant"):
-                            st.write(response_text)
+                            st.write(reply)
                     except Exception as e:
                         st.error(str(e))
 
         st.divider()
         if st.button("次の問題へ ➡️", type="primary", use_container_width=True):
             next_question()
+
 
 if __name__ == "__main__":
     main()
