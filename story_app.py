@@ -375,18 +375,6 @@ def main():
         st.info(f"**設問:** {node['question']}\n\n**正解:** {node['correct']}")
         st.divider()
 
-        # 過去の AI 履歴（複数対応）
-        if node.get("past_question") and node.get("past_answer"):
-            with st.expander("📝 過去のAIとのやり取りをすべて確認する"):
-                qs = node["past_question"].split("\n---\n")
-                ans = node["past_answer"].split("\n---\n")
-                for idx, (pq, pa) in enumerate(zip(qs, ans), 1):
-                    st.markdown(f"**対話 {idx}**")
-                    st.caption(f"質問: {pq}")
-                    st.write(pa)
-                    st.divider()
-
-        # 正誤判定
         if st.session_state.quiz_answered_correct:
             st.success("✨ 正解！")
             st.write(node["correct_explanation"])
@@ -436,6 +424,18 @@ def main():
                             st.write(reply)
                     except Exception as e:
                         st.error(str(e))
+
+        # 過去の AI 履歴（複数対応） - チャット欄の下に配置
+        if node.get("past_question") and node.get("past_answer"):
+            st.divider()
+            with st.expander("📝 過去のAIとのやり取りをすべて確認する"):
+                qs = node["past_question"].split("\n---\n")
+                ans = node["past_answer"].split("\n---\n")
+                for idx, (pq, pa) in enumerate(zip(qs, ans), 1):
+                    st.markdown(f"**対話 {idx}**")
+                    st.caption(f"質問: {pq}")
+                    st.write(pa)
+                    st.divider()
 
         st.divider()
         if st.button("次の問題へ ➡️", type="primary", use_container_width=True):
