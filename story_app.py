@@ -459,22 +459,36 @@ def main():
             with st.chat_message(chat["role"]):
                 st.write(chat["content"])
 
-        if user_q := st.chat_input("この問題についてもっと詳しく聞く..."):
+        req_detail = st.button("💡 ワンタップで詳細な解説をAIに求める", use_container_width=True)
+        chat_val = st.chat_input("この問題についてもっと詳しく聞く...")
+
+        user_q = None
+        is_detail_req = False
+        if req_detail:
+            user_q = "この問題について、具体例を交えてより詳細に解説してください。"
+            is_detail_req = True
+        elif chat_val:
+            user_q = chat_val
+
+        if user_q:
             api_key = st.secrets.get("gemini_api_key", "")
             if not api_key:
                 st.warning("secrets.toml で gemini_api_key を設定してください")
             else:
-                # トークン節約型プロンプト（必要最小限のコンテキスト）
                 prompt = (
                     f"設問:{node['question']}\n正解:{node['correct']}\n"
                     f"解説:{node['correct_explanation']}\n"
                     f"質問:{user_q}\n"
-                    "挨拶・前置き不要。簡潔に回答。"
                 )
+                if is_detail_req:
+                    prompt += "挨拶・前置き不要。初心者にも分かりやすく、具体例や理由を交えて詳細に解説してください。"
+                else:
+                    prompt += "挨拶・前置き不要。簡潔に回答。"
 
-                st.session_state.ai_chat_history.append({"role": "user", "content": user_q})
+                display_q = "💡（詳細な解説をリクエストしました）" if is_detail_req else user_q
+                st.session_state.ai_chat_history.append({"role": "user", "content": display_q})
                 with st.chat_message("user"):
-                    st.write(user_q)
+                    st.write(display_q)
 
                 with st.spinner("AI思考中..."):
                     try:
