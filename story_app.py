@@ -167,10 +167,10 @@ def flush_history_to_sheets():
         st.error(f"保存失敗: {e}")
 
 
-def save_resume_state(url: str, node_id: str):
+def save_resume_state(url: str, node_id: str) -> bool:
     """現在の再開用Node IDをHistoryシートのD2セルの記録する"""
     if not url or not GSPREAD_AVAILABLE:
-        return
+        return False
     try:
         client = _get_gspread_client(readonly=False)
         sh = client.open_by_url(url)
@@ -179,10 +179,23 @@ def save_resume_state(url: str, node_id: str):
         except gspread.WorksheetNotFound:
             ws = sh.add_worksheet(title="History", rows=1000, cols=4)
             ws.append_row(["Timestamp", "Word", "Correct", "Resume Node"])
-        ws.update_cell(2, 4, node_id)
+        
+        try:
+            ws.update_cell(2, 4, node_id)
+        except Exception as update_err:
+            if "exceeds grid limits" in str(update_err):
+                # 列が足りない(旧バージョンのHistoryシートである)場合は列を追加して再試行
+                ws.add_cols(1)
+                ws.update_cell(1, 4, "Resume Node")
+                ws.update_cell(2, 4, node_id)
+            else:
+                raise update_err
+
         st.session_state.resume_node_id = node_id
+        return True
     except Exception as e:
         st.error(f"再開データの保存に失敗しました: {e}")
+        return False
 
 
 
@@ -319,8 +332,8 @@ with st.sidebar:
     
     if st.button("💾 現在の画面で保存", use_container_width=True):
         code = st.session_state.current_node_id
-        save_resume_state(selected_deck_url, code)
-        st.success("保存しました！次回はサイドバーから該当箇所を自動再開できます。")
+        if save_resume_state(selected_deck_url, code):
+            st.success("保存しました！次回はサイドバーから該当箇所を自動再開できます。")
     
     resume_id = st.session_state.get("resume_node_id")
     if resume_id and resume_id in st.session_state.nodes:
