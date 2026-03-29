@@ -209,7 +209,8 @@ def _call_gemini(prompt: str, api_key: str) -> str:
 # =============================================================================
 def get_shuffled_options(node):
     """選択肢をシャッフルして返す（セッション内は固定）。"""
-    key = f"options_{node['id']}"
+    deck_id = st.session_state.get("current_url", "dummy")
+    key = f"options_{deck_id}_{node['id']}"
     if key not in st.session_state:
         opts = [
             {"text": node["correct"], "is_correct": True},
@@ -335,18 +336,18 @@ def main():
     render_header()
     node_id = st.session_state.current_node_id
 
+    # --- End 到達 ---
+    if node_id.lower() == "end":
+        st.balloons()
+        st.success("🎉 全問クリア！おめでとうございます！")
+        if st.button("最初からやり直す", use_container_width=True):
+            reset_to_start()
+        return
+
     # --- ノード未検出 ---
     if node_id not in st.session_state.nodes:
         st.error(f"Node ID '{node_id}' が見つかりません。")
         if st.button("最初に戻る"):
-            reset_to_start()
-        return
-
-    # --- End 到達 ---
-    if node_id == "End":
-        st.balloons()
-        st.success("🎉 全問クリア！おめでとうございます！")
-        if st.button("最初からやり直す", use_container_width=True):
             reset_to_start()
         return
 
