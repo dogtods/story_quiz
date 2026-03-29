@@ -276,6 +276,31 @@ with st.sidebar:
         st.slider("Temperature", 0.0, 1.0, 0.3, 0.1, key="ai_temperature", help="高いほど創造的、低いほど正確")
         st.number_input("Max Output Tokens", 100, 2048, 300, 50, key="ai_max_tokens", help="AI回答の最大文字数")
 
+    st.divider()
+    st.subheader("🚪 途中退出 / 再開")
+    if st.button("🔄 初めから実施する", use_container_width=True):
+        reset_to_start()
+    
+    if st.button("💾 現在の画面で保存", use_container_width=True):
+        code = st.session_state.current_node_id
+        st.success(f"保存しました！次回再開時は以下のコードをご利用ください：\n\n**{code}**")
+    
+    resume_code = st.text_input("再開用コード入力", key="resume_input", help="保存時に発行されたコードを入力")
+    if st.button("🚀 コードから再開", use_container_width=True):
+        if not resume_code:
+            st.warning("コードを入力してください。")
+        elif resume_code in st.session_state.nodes:
+            st.session_state.current_node_id = resume_code
+            st.session_state.history_path = ["start", "(途中再開)", resume_code]
+            st.session_state.view_state = "question"
+            st.session_state.quiz_answered_correct = False
+            st.session_state.ai_chat_history = []
+            st.success("再開しました！")
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error("入力されたコードが見つかりません。")
+
 # --- URL 変更検知 ---
 if "current_url" not in st.session_state or st.session_state.current_url != selected_deck_url:
     st.session_state.current_url = selected_deck_url
