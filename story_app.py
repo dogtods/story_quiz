@@ -155,8 +155,8 @@ def flush_history_to_sheets():
         try:
             ws = sh.worksheet("History")
         except gspread.WorksheetNotFound:
-            ws = sh.add_worksheet(title="History", rows=1000, cols=3)
-            ws.append_row(["Timestamp", "Word", "Correct"])
+            ws = sh.add_worksheet(title="History", rows=1000, cols=4)
+            ws.append_row(["Timestamp", "Word", "Correct", "Resume Node"])
         ws.append_rows([
             [r["timestamp"], r["word"], "Correct" if r["correct"] else "Wrong"]
             for r in pending
@@ -165,6 +165,42 @@ def flush_history_to_sheets():
         st.toast("学習履歴を保存しました！", icon="✅")
     except Exception as e:
         st.error(f"保存失敗: {e}")
+
+
+def save_resume_state(url: str, node_id: str):
+    """現在の再開用Node IDをHistoryシートのD2セルの記録する"""
+    if not url or not GSPREAD_AVAILABLE:
+        return
+    try:
+        client = _get_gspread_client(readonly=False)
+        sh = client.open_by_url(url)
+        try:
+            ws = sh.worksheet("History")
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title="History", rows=1000, cols=4)
+            ws.append_row(["Timestamp", "Word", "Correct", "Resume Node"])
+        ws.update_cell(2, 4, node_id)
+        st.session_state.resume_node_id = node_id
+    except Exception as e:
+        st.error(f"再開データの保存に失敗しました: {e}")
+
+
+
+def load_resume_state(url: str):
+    """HistoryシートのD2セルから再開用Node IDを読み取る"""
+    if not url or not GSPREAD_AVAILABLE:
+        return None
+    try:
+        client = _get_gspread_client(readonly=True) # readonlyで更新は避ける
+        sh = client.open_by_url(url)
+        try:
+            ws = sh.worksheet("History")
+            val = ws.cell(2, 4).value
+            return val if val else None
+        except gspread.WorksheetNotFound:
+            return None
+    except Exception:
+        return None
 
 
 # =============================================================================
@@ -283,28 +319,26 @@ with st.sidebar:
     
     if st.button("💾 現在の画面で保存", use_container_width=True):
         code = st.session_state.current_node_id
-        st.success(f"保存しました！次回再開時は以下のコードをご利用ください：\n\n**{code}**")
+        save_resume_state(selected_deck_url, code)
+        st.success("保存しました！次回はサイドバーから該当箇所を自動再開できます。")
     
-    resume_code = st.text_input("再開用コード入力", key="resume_input", help="保存時に発行されたコードを入力")
-    if st.button("🚀 コードから再開", use_container_width=True):
-        if not resume_code:
-            st.warning("コードを入力してください。")
-        elif resume_code in st.session_state.nodes:
-            st.session_state.current_node_id = resume_code
-            st.session_state.history_path = ["start", "(途中再開)", resume_code]
+    resume_id = st.session_state.get("resume_node_id")
+    if resume_id and resume_id in st.session_state.nodes:
+        if st.button("🚀 前回の続きから再開", use_container_width=True, type="primary"):
+            st.session_state.current_node_id = resume_id
+            st.session_state.history_path = ["start", "(途中再開)", resume_id]
             st.session_state.view_state = "question"
             st.session_state.quiz_answered_correct = False
             st.session_state.ai_chat_history = []
             st.success("再開しました！")
             time.sleep(1)
             st.rerun()
-        else:
-            st.error("入力されたコードが見つかりません。")
 
 # --- URL 変更検知 ---
 if "current_url" not in st.session_state or st.session_state.current_url != selected_deck_url:
     st.session_state.current_url = selected_deck_url
     st.session_state.nodes = load_nodes_from_sheets(selected_deck_url)
+    st.session_state.resume_node_id = load_resume_state(selected_deck_url)
     st.session_state.current_node_id = "start"
     st.session_state.history_path = ["start"]
     st.session_state.view_state = "question"
