@@ -219,16 +219,18 @@ def load_resume_state(url: str):
 # =============================================================================
 # Gemini AI（トークン節約仕様）
 # =============================================================================
-def _call_gemini(prompt: str, api_key: str) -> str:
+def _call_gemini(prompt: str, api_key: str, max_tokens: int = None) -> str:
     """Gemini REST API 呼び出し（リトライ付き）。"""
     url = (
         "https://generativelanguage.googleapis.com/v1beta/"
         f"models/gemini-flash-lite-latest:generateContent?key={api_key}"
     )
+    # 文字数が途中で切れるのを防ぐため、API上の最大トークン数には+300のバッファを持たせる
+    base_tokens = max_tokens if max_tokens else st.session_state.get("ai_max_tokens", 300)
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "maxOutputTokens": st.session_state.get("ai_max_tokens", 300),
+            "maxOutputTokens": base_tokens + 300,
             "temperature": st.session_state.get("ai_temperature", 0.3),
         },
     }
@@ -480,10 +482,11 @@ def main():
                     f"解説:{node['correct_explanation']}\n"
                     f"質問:{user_q}\n"
                 )
+                target_chars = st.session_state.get("ai_max_tokens", 300)
                 if is_detail_req:
-                    prompt += "挨拶・前置き不要。初心者にも分かりやすく、具体例や理由を交えて詳細に解説してください。"
+                    prompt += f"挨拶・前置き不要。初心者にも分かりやすく、具体例や理由を交えて【約{target_chars}文字】のボリュームで詳細に解説してください。"
                 else:
-                    prompt += "挨拶・前置き不要。簡潔に回答。"
+                    prompt += f"挨拶・前置き不要。【最大でも{target_chars}文字以内で】簡潔に回答。"
 
                 display_q = "💡（詳細な解説をリクエストしました）" if is_detail_req else user_q
                 st.session_state.ai_chat_history.append({"role": "user", "content": display_q})
@@ -492,7 +495,7 @@ def main():
 
                 with st.spinner("AI思考中..."):
                     try:
-                        reply = _call_gemini(prompt, api_key)
+                        reply = _call_gemini(prompt, api_key, max_tokens=target_chars)
                         st.session_state.ai_chat_history.append({"role": "assistant", "content": reply})
                         save_ai_chat_to_sheets(
                             st.session_state.get("current_url", ""),
